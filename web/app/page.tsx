@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useMemo, useState, useTransition } from "react";
+import { FormEvent, useMemo, useState } from "react";
 
 type Finding = {
   severity?: string | null;
@@ -31,8 +31,21 @@ type AuditResponse = {
   raw_report?: string;
 };
 
+type ProgressStep = {
+  step: number;
+  agent: string;
+  message: string;
+  status: "pending" | "running" | "done";
+};
+
 const API_URL =
   process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ?? "http://127.0.0.1:8000";
+
+const INITIAL_STEPS: ProgressStep[] = [
+  { step: 1, agent: "Triador", message: "Normalizando dados do projeto...", status: "pending" },
+  { step: 2, agent: "Pesquisador", message: "Buscando evidencias nas normas...", status: "pending" },
+  { step: 3, agent: "Auditor", message: "Gerando relatorio de conformidade...", status: "pending" },
+];
 
 const demoInputs = [
   {
@@ -78,11 +91,47 @@ function isSupportByFinding(item: Suggestion | SupportByFinding): item is Suppor
   return "suggestions" in item && ("finding_title" in item || "status" in item || "notes" in item);
 }
 
+function parseSSELines(buffer: string): { events: Array<{ event: string; data: string }>; remainder: string } {
+  const events: Array<{ event: string; data: string }> = [];
+  const lines = buffer.split("\n");
+  let currentEvent = "";
+  let currentData = "";
+  let remainder = "";
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    if (line.startsWith("event: ")) {
+      currentEvent = line.slice(7).trim();
+    } else if (line.startsWith("data: ")) {
+      currentData = line.slice(6);
+    } else if (line === "" && currentEvent) {
+      events.push({ event: currentEvent, data: currentData });
+      currentEvent = "";
+      currentData = "";
+    } else if (line === "" && currentData) {
+      events.push({ event: "message", data: currentData });
+      currentData = "";
+    }
+  }
+
+  if (currentEvent || currentData) {
+    const parts: string[] = [];
+    if (currentEvent) parts.push(`event: ${currentEvent}`);
+    if (currentData) parts.push(`data: ${currentData}`);
+    remainder = parts.join("\n");
+  }
+
+  return { events, remainder };
+}
+
 export default function HomePage() {
   const [projectDescription, setProjectDescription] = useState(demoInputs[0].value);
   const [result, setResult] = useState<AuditResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [isPending, startTransition] = useTransition();
+  const [isAuditing, setIsAuditing] = useState(false);
+  const [steps, setSteps] = useState<ProgressStep[]>(INITIAL_STEPS);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
   const supportGroups = useMemo(() => {
     const rows = result?.support_suggestions ?? [];
@@ -94,48 +143,92 @@ export default function HomePage() {
     return rows.filter((item): item is Suggestion => !isSupportByFinding(item));
   }, [result]);
 
-  function submitAudit(event: FormEvent<HTMLFormElement>) {
+  function updateStep(stepNum: number, status: "running" | "done") {
+    setSteps((prev) =>
+      prev.map((s) => (s.step === stepNum ? { ...s, status } : s)),
+    );
+  }
+
+  async function submitAudit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
+    setResult(null);
+    setIsAuditing(true);
+    setSteps(INITIAL_STEPS.map((s) => ({ ...s, status: "pending" as const })));
+    setElapsedSeconds(0);
 
-    startTransition(async () => {
-      try {
-        const response = await fetch(`${API_URL}/audit`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            project_description: projectDescription,
-          }),
-        });
+    const timerInterval = setInterval(() => {
+      setElapsedSeconds((prev) => prev + 1);
+    }, 1000);
 
-        if (!response.ok) {
-          let detail = "Falha ao executar a auditoria.";
-          try {
-            const payload = (await response.json()) as { detail?: string };
-            detail = payload.detail || detail;
-          } catch {
-            const text = await response.text();
-            if (text) {
-              detail = text;
-            }
-          }
-          throw new Error(detail);
+    try {
+      const response = await fetch(`${API_URL}/audit/stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ project_description: projectDescription }),
+      });
+
+      if (!response.ok) {
+        let detail = "Falha ao executar a auditoria.";
+        try {
+          const payload = (await response.json()) as { detail?: string };
+          detail = payload.detail || detail;
+        } catch {
+          const text = await response.text();
+          if (text) detail = text;
         }
-
-        const payload = (await response.json()) as AuditResponse;
-        setResult(payload);
-      } catch (submissionError) {
-        const message =
-          submissionError instanceof Error
-            ? submissionError.message
-            : "Falha inesperada ao chamar a API.";
-        setResult(null);
-        setError(message);
+        throw new Error(detail);
       }
-    });
+
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error("Stream not supported");
+
+      const decoder = new TextDecoder();
+      let sseBuffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        sseBuffer += decoder.decode(value, { stream: true });
+        const { events, remainder } = parseSSELines(sseBuffer);
+        sseBuffer = remainder;
+
+        for (const evt of events) {
+          if (evt.event === "ping") continue;
+
+          let payload;
+          try {
+            payload = JSON.parse(evt.data);
+          } catch {
+            continue;
+          }
+
+          if (evt.event === "step_start") {
+            updateStep(payload.step, "running");
+          } else if (evt.event === "step_done") {
+            updateStep(payload.step, "done");
+          } else if (evt.event === "result") {
+            setResult(payload as AuditResponse);
+          } else if (evt.event === "error") {
+            throw new Error(payload.detail || "Erro durante a auditoria.");
+          }
+        }
+      }
+    } catch (submissionError) {
+      const message =
+        submissionError instanceof Error
+          ? submissionError.message
+          : "Falha inesperada ao chamar a API.";
+      setResult(null);
+      setError(message);
+    } finally {
+      clearInterval(timerInterval);
+      setIsAuditing(false);
+    }
   }
+
+  const activeStep = steps.find((s) => s.status === "running");
 
   return (
     <main className="shell">
@@ -216,10 +309,47 @@ export default function HomePage() {
             <p>
               Dica: quanto mais claro o texto sobre ambiente, carga e protecao, melhor a auditoria.
             </p>
-            <button className="primary-button" type="submit" disabled={isPending}>
-              {isPending ? "Auditando..." : "Executar auditoria"}
+            <button className="primary-button" type="submit" disabled={isAuditing}>
+              {isAuditing ? "Auditando..." : "Executar auditoria"}
             </button>
           </div>
+
+          {isAuditing ? (
+            <div className="progress-tracker">
+              <div className="progress-header">
+                <span className="progress-timer">{elapsedSeconds}s</span>
+              </div>
+              <div className="progress-steps">
+                {steps.map((s) => (
+                  <div
+                    key={s.step}
+                    className={`progress-step progress-step--${s.status}`}
+                  >
+                    <div className="step-indicator">
+                      {s.status === "done" ? (
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                          <path d="M3 8.5L6.5 12L13 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
+                      ) : s.status === "running" ? (
+                        <div className="step-spinner" />
+                      ) : (
+                        <span className="step-number">{s.step}</span>
+                      )}
+                    </div>
+                    <div className="step-content">
+                      <strong>{s.agent}</strong>
+                      <span>{s.message}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {activeStep ? (
+                <p className="progress-active-msg">
+                  {activeStep.agent}: {activeStep.message}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
 
           {error ? <div className="error-box">{error}</div> : null}
         </form>
