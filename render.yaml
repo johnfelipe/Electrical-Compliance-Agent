@@ -1,0 +1,26 @@
+# render.yaml — Render Blueprint for public deployment
+# Backend: FastAPI on Render (Docker)
+# Frontend: deploy separately on Vercel
+
+services:
+  - type: web
+    name: electrical-compliance-api
+    runtime: docker
+    dockerfilePath: backend/Dockerfile
+    dockerContext: backend
+    plan: free
+    region: oregon
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-4o-mini
+      - key: EMBEDDING_MODEL
+        value: text-embedding-3-small
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+    healthCheckPath: /health

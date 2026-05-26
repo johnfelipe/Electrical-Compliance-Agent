@@ -240,7 +240,10 @@ def render_support_json(support_by_finding: list[dict[str, Any]]) -> str:
     return "SUPPORT_JSON: " + json.dumps(payload, ensure_ascii=False)
 
 
-def kickoff_audit(project_description: str) -> dict[str, Any]:
+def kickoff_audit(
+    project_description: str,
+    task_callback: Any | None = None,
+) -> dict[str, Any]:
     reset_trace()
     llm = build_llm()
     rag_tool = SearchTechnicalStandardsTool()
@@ -322,12 +325,15 @@ def kickoff_audit(project_description: str) -> dict[str, Any]:
         context=[t1, t2],
     )
 
-    crew = Crew(
-        agents=[triador, pesquisador, auditor],
-        tasks=[t1, t2, t3],
-        process=Process.sequential,
-        verbose=True,
-    )
+    crew_kwargs: dict[str, Any] = {
+        "agents": [triador, pesquisador, auditor],
+        "tasks": [t1, t2, t3],
+        "process": Process.sequential,
+        "verbose": True,
+    }
+    if task_callback is not None:
+        crew_kwargs["task_callback"] = task_callback
+    crew = Crew(**crew_kwargs)
 
     result = crew.kickoff()
     final_raw = str(result)
