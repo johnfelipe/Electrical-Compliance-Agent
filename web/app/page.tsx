@@ -295,25 +295,6 @@ export default function HomePage() {
           <label className="field-label" htmlFor="project-description">
             Descricao do projeto
           </label>
-          <textarea
-            id="project-description"
-            className="project-input"
-            value={projectDescription}
-            onChange={(event) => setProjectDescription(event.target.value)}
-            placeholder="Ex.: circuito de banheiro, quadro, cargas, protecoes, bitolas, ambiente..."
-            minLength={10}
-            rows={12}
-          />
-
-          <div className="form-footer">
-            <p>
-              Dica: quanto mais claro o texto sobre ambiente, carga e protecao, melhor a auditoria.
-            </p>
-            <button className="primary-button" type="submit" disabled={isAuditing}>
-              {isAuditing ? "Auditando..." : "Executar auditoria"}
-            </button>
-          </div>
-
           {isAuditing ? (
             <div className="progress-tracker">
               <div className="progress-header">
@@ -350,6 +331,26 @@ export default function HomePage() {
               ) : null}
             </div>
           ) : null}
+
+          <textarea
+            id="project-description"
+            className={`project-input${isAuditing ? " project-input--collapsed" : ""}`}
+            value={projectDescription}
+            onChange={(event) => setProjectDescription(event.target.value)}
+            placeholder="Ex.: circuito de banheiro, quadro, cargas, protecoes, bitolas, ambiente..."
+            minLength={10}
+            rows={12}
+            disabled={isAuditing}
+          />
+
+          <div className="form-footer">
+            <p>
+              Dica: quanto mais claro o texto sobre ambiente, carga e protecao, melhor a auditoria.
+            </p>
+            <button className="primary-button" type="submit" disabled={isAuditing}>
+              {isAuditing ? "Auditando..." : "Executar auditoria"}
+            </button>
+          </div>
 
           {error ? <div className="error-box">{error}</div> : null}
         </form>

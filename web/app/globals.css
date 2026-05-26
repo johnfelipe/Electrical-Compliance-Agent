@@ -255,6 +255,13 @@ input {
   box-shadow: 0 0 0 4px rgba(15, 139, 141, 0.12);
 }
 
+.project-input--collapsed {
+  min-height: 60px;
+  max-height: 60px;
+  opacity: 0.5;
+  transition: all 300ms ease;
+}
+
 .form-footer {
   display: flex;
   align-items: center;
